@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# 过程截图：含聊天内容，绝对不能进版本库
+wx_send_shots/
+*.png
+
+# 正文临时文件
+body.txt
