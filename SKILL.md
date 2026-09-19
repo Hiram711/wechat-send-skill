@@ -55,7 +55,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/wx_send.ps1 -Target 
 
 脚本开头会先探测桌面可用性，不可用就返回 8，不去做无用的输入动作。锁屏有两副面孔，两条都认：已息屏时前台窗口为 0 且截屏亮度约等于 0；锁屏界面刚亮起时前台是 `Windows.UI.Core.CoreWindow`、壁纸让亮度到 80 上下。
 
-想要锁屏期间也能送达，只能接受消息出本机，那是另一个决定。调用方该做的是把消息存起来等解锁补发（`wechat-task-notify` 就是这么做的）。
+想要锁屏期间也能送达，只能接受消息出本机，那是另一个决定。调用方该做的是把消息存起来等解锁补发（`agent-task-msg` 就是这么做的）。
 
 ## 排查
 
