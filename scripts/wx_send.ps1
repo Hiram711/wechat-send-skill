@@ -447,7 +447,7 @@ function Find-Divider($bmp, [int]$w, [int]$h) {
     $ys = @(); for ($k = 2; $k -le 10; $k++) { $ys += [int]($h * $k / 12.0) }
     $n = $ys.Count
     $x0 = [int](0.08 * $w); $x1 = [int](0.40 * $w)
-    if ($x1 -le ($x0 + 2)) { return [int](0.21 * $w) }
+    if ($x1 -le ($x0 + 2)) { return -1 }
     $hit = New-Object 'int[]' ($w)
     foreach ($y in $ys) {
         $p = $bmp.GetPixel($x0, $y)
@@ -461,7 +461,8 @@ function Find-Divider($bmp, [int]$w, [int]$h) {
     for ($t = $n; $t -ge [int]([math]::Ceiling($n * 0.8)); $t--) {
         for ($x = $x1 - 1; $x -gt $x0; $x--) { if ($hit[$x] -ge $t) { return $x } }
     }
-    return [int](0.21 * $w)
+    # 无法识别时不能猜 21%：窄窗口里这个坐标可能落在会话列表中。
+    return -1
 }
 
 function Find-InputBox($bmp, [int]$w, [int]$h, [int]$divX) {
@@ -522,12 +523,13 @@ function Get-Geometry([string]$shotPath) {
     try {
         $w = $bmp.Width; $h = $bmp.Height
         $divX = Find-Divider $bmp $w $h
-        $ib = Find-InputBox $bmp $w $h $divX
+        $ib = if ($divX -gt 0) { Find-InputBox $bmp $w $h $divX } else { $null }
         return [pscustomobject]@{ W = $w; H = $h; DivX = $divX; Input = $ib }
     } finally { $bmp.Dispose() }
 }
 
 function Get-ChatTitle($ocr, $geo) {
+    if ($geo.DivX -le 0) { return $null }
     # 聊天标题 = 分栏线右侧、顶部横带内、最左边的那行"真文字"。
     # 必须过滤 OCR 噪声：图标常被识别成 'O' / '0' / '囗' 之类的单字符。
     $top = [int](0.025 * $geo.H); $bot = [int](0.085 * $geo.H)
@@ -554,6 +556,32 @@ function Test-TitleIsTarget([string]$nTitle, [string]$nTarget) {
     if ($nTitle -eq $nTarget) { return $true }
     $re = '^' + [regex]::Escape($nTarget) + '(?:（\d+）|\(\d+\))$'
     return ($nTitle -match $re)
+}
+
+function Test-InputGeometry($geo, $title) {
+    if (-not $title -or $geo.DivX -le 0 -or -not $geo.Input) { return $false }
+    # 标题与输入框都属于右栏；错误分栏不能把输入点击带回左侧会话列表。
+    $tolerance = [math]::Max(4, [int]($geo.W * 0.01))
+    return ($geo.Input.L -ge ($title.X - $tolerance) -and
+            $geo.Input.CX -gt $title.X -and $geo.Input.CX -lt $geo.Input.R -and
+            $geo.Input.T -gt ($geo.H * 0.5) -and
+            $geo.Input.CY -gt $geo.Input.T -and $geo.Input.CY -lt $geo.Input.B)
+}
+
+function Read-TargetView([IntPtr]$hwnd, [string]$tag, [string]$expected) {
+    $shot = Get-WinShot $hwnd $tag
+    $geo = Get-Geometry $shot.Path
+    $ocr = Invoke-Ocr $shot.Path
+    $title = Get-ChatTitle $ocr $geo
+    if (-not $title -or -not (Test-TitleIsTarget $title.NText $expected)) {
+        Log '!! 当前会话无法确认为目标，停止输入和发送'
+        exit 5
+    }
+    if (-not (Test-InputGeometry $geo $title)) {
+        Log '!! 输入框位置无法可靠确认，停止输入和发送'
+        exit 7
+    }
+    return [pscustomobject]@{ Shot = $shot; Geo = $geo; Ocr = $ocr; Title = $title }
 }
 
 function Set-Clip([string]$text) {
@@ -843,13 +871,15 @@ try {
     for ($att = 1; $att -le 3 -and -not $inBox; $att++) {
         $gIn = $(if ($att -eq 1) { $g3 } else { $g4 })
         $sIn = $(if ($att -eq 1) { $s3 } else { $s4 })
-        if (-not $gIn.Input) { Log '!! 未能定位输入框'; exit 7 }
+        if (-not (Test-InputGeometry $gIn $title)) { Log '!! 未能可靠定位输入框'; exit 7 }
         if ($att -gt 1 -or $leftover) {
             # 重来之前先清掉上一轮可能残留在框里的半截正文，否则会叠字。
             # 这时焦点未必在输入框，所以先点一下再清。
             Log ("   第 {0} 次尝试粘贴（先清空输入框）" -f $att)
             Click-Live $hwnd $sIn $gIn.Input.CX $gIn.Input.CY
             Start-Sleep -Milliseconds 250
+            $null = Read-TargetView $hwnd ('before_clear{0}' -f $att) $nTarget
+            Assert-Fg $hwnd
             Send-Keys '^a'; Start-Sleep -Milliseconds 120
             Send-Keys '{DELETE}'; Start-Sleep -Milliseconds 200
         }
@@ -863,7 +893,8 @@ try {
         $inkX0 = $ibox.L + 6; $inkX1 = $ibox.R - 6
         $bandH = [int](($ibox.B - $ibox.T) * 0.30); if ($bandH -lt 30) { $bandH = 30 }
         $inkY0 = $ibox.T + 4; $inkY1 = $ibox.T + $bandH
-        $sBase = Get-WinShot $hwnd ('base{0}' -f $att)
+        $baseView = Read-TargetView $hwnd ('base{0}' -f $att) $nTarget
+        $sBase = $baseView.Shot
         $inkBase = Measure-Ink $sBase.Path $inkX0 $inkX1 $inkY0 $inkY1 130
 
         # 逐行粘贴，行间用 Shift+Enter 换行，保证回车只在最后按一次。
@@ -884,10 +915,11 @@ try {
         Send-Keys '^{HOME}'
         Start-Sleep -Milliseconds 400
 
-        $s4 = Get-WinShot $hwnd ('typed{0}' -f $att)
-        $g4 = Get-Geometry $s4.Path
+        $typedView = Read-TargetView $hwnd ('typed{0}' -f $att) $nTarget
+        $s4 = $typedView.Shot
+        $g4 = $typedView.Geo
         if ($g4.Input) {
-            foreach ($o in (Invoke-Ocr $s4.Path)) {
+            foreach ($o in $typedView.Ocr) {
                 if ($o.Y -ge ($g4.Input.T - 5) -and $o.X -gt $g4.DivX -and $o.LText.Contains($probe)) { $inBox = $true; break }
             }
         }
@@ -928,6 +960,8 @@ try {
         Log '正文已在输入框中'
     }
 
+    # 同一个微信窗口内也可能切换会话；前台句柄相同不足以确认收件人。
+    $null = Read-TargetView $hwnd 'before_finish' $nTarget
     if ($DryRun) {
         # 上一步的 OCR 确认过正文在输入框里，但那张截图之后又过了约 10 秒，
         # 前台可能已经被抢走 —— 此时 ^a + DELETE 会打在别人窗口上，
