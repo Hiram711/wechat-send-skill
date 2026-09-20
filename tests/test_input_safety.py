@@ -45,6 +45,26 @@ if (-not (Test-InputGeometry $geo $title)) { throw 'Real input rejected' }
 """)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_light_theme_boundary_at_threshold_is_detected(self):
+        result = self.run_ps("""
+$bmp = [Drawing.Bitmap]::new(1340,648)
+$g = [Drawing.Graphics]::FromImage($bmp)
+$left = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(243,243,244))
+try {
+    $g.Clear([Drawing.Color]::FromArgb(250,250,250))
+    $g.FillRectangle($left, 0, 0, 309, 648)
+    if ((Find-Divider $bmp 1340 648) -ne 309) { throw 'Light theme divider missed at RGB difference 20' }
+    $focused = [Drawing.SolidBrush]::new([Drawing.Color]::FromArgb(244,244,245))
+    try { $g.FillRectangle($focused, 0, 520, 309, 128) } finally { $focused.Dispose() }
+    if ((Find-Divider $bmp 1340 648) -ne 309) { throw 'Divider lost after lower input rows change to RGB difference 17' }
+    # One horizontal image edge must not qualify as a vertical divider.
+    $g.Clear([Drawing.Color]::White)
+    $g.FillRectangle([Drawing.Brushes]::Gray, 309, 100, 60, 100)
+    if ((Find-Divider $bmp 1340 648) -ne -1) { throw 'Short image edge accepted as divider' }
+} finally { $left.Dispose(); $g.Dispose(); $bmp.Dispose() }
+""")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_changed_chat_stops_before_next_action(self):
         result = self.run_ps("""
 function Get-WinShot { [pscustomobject]@{Path='fixture'} }

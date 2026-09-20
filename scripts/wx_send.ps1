@@ -453,7 +453,9 @@ function Find-Divider($bmp, [int]$w, [int]$h) {
         $p = $bmp.GetPixel($x0, $y)
         for ($x = $x0 + 1; $x -lt $x1; $x++) {
             $c = $bmp.GetPixel($x, $y)
-            if ((Px-Diff $c $p) -gt 20) { $hit[$x]++ }
+            # 浅色主题边界色差为 20；输入框随长草稿增高后，部分扫描行降至 17。
+            # 仍要求同一列覆盖至少 80% 扫描行，不能按比例猜点击位置。
+            if ((Px-Diff $c $p) -ge 17) { $hit[$x]++ }
             $p = $c
         }
     }
@@ -574,6 +576,7 @@ function Read-TargetView([IntPtr]$hwnd, [string]$tag, [string]$expected) {
     $ocr = Invoke-Ocr $shot.Path
     $title = Get-ChatTitle $ocr $geo
     if (-not $title -or -not (Test-TitleIsTarget $title.NText $expected)) {
+        Log ("复核阶段={0} W={1} H={2} DivX={3} 标题可见={4}" -f $tag,$geo.W,$geo.H,$geo.DivX,[bool]$title)
         Log '!! 当前会话无法确认为目标，停止输入和发送'
         exit 5
     }
